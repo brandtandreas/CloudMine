@@ -30,37 +30,14 @@ namespace CloudMineServer.API_server.Controllers
         }
 
 
-        //Denna fungerar enligt "gamla metoden". Filen skapas på servern och returneras till klienten.
-        //dock ligger filen kvar på servern så den tas inte bort, kanske går att lägga till funktion för det.
-        [HttpGet("{id:int}")]
-        public async Task<FileStreamResult> Get([FromRoute] int id)
-        {
-            var merge = new FileMerge();
-            var userId = User.GetUserId();
-
-            var file = await _context.GetSpecifikFileItemAndDataChunk(id, userId);
-
-            var merger = new FileMerge();
-            var uri = merger.MakeFileOnServer(file);
-
-            var stream = System.IO.File.OpenRead(uri.AbsolutePath);
-
-            return new FileStreamResult(stream, new MediaTypeHeaderValue("application/octet-stream"))
-            {
-                FileDownloadName = file.FileName
-            };
-
-        }
-
         //Martins förslag bygger på att man använder en ny returtyp som ärver FileResult.
         //Denna har jag lagt i services och heter FileCallbackResult och ska kunna hantera chunks av streams.
         //Så då skulle man isåfall implementera en annan Get-metod som använder denna och vi skippar isåfall att använda FileMerge().
         //Länk att läsa på detta: http://blog.stephencleary.com/2016/11/streaming-zip-on-aspnet-core.html
         // i länken så skapar han upp en zip-fil "on the fly", men vi får anpassa den isåfall.
 
-
         // Uploads file without saving on server disk.
-        // Supports resume if browser/downloader has support
+        // Supports resume if browser/downloader has support (Chrome has no support)
         // GET: api/v{version:apiVersion}/GetFile/NoDisk/id
         [Authorize]
         [HttpGet("NoDisk/{id:int}")]
@@ -93,59 +70,23 @@ namespace CloudMineServer.API_server.Controllers
             Response.Headers.Add("Accept-Ranges", "bytes");
             Response.Headers.Add("Connection", "keep-alive");
             Response.Headers.Add("Transfer-Encoding", "");
-            
+
             string mimeType = MimeTypes.GetMimeType(fileItem.FileName);
-            return new FileCallbackResult(new MediaTypeHeaderValue(mimeType), async (outputStream, _) =>
-            {
-                while (dataChunk != null)
+            return new FileCallbackResult(new MediaTypeHeaderValue(mimeType),
+                async (outputStream, _) =>
                 {
-                    using (Stream readStream = new MemoryStream(dataChunk.Data)) 
+                    while (dataChunk != null)
                     {
-                        await readStream.CopyToAsync(outputStream);
+                        using (Stream readStream = new MemoryStream(dataChunk.Data))
+                        {
+                            await readStream.CopyToAsync(outputStream);
+                        }
+                        dataChunk = await _context.GetNextDataChunk(dataChunk);
                     }
-                    dataChunk = await _context.GetNextDataChunk(dataChunk);
-                }
-            })
-            { FileDownloadName = fileItem.FileName };
-
-            #region OldAndTest
-            //var dataChunks = fileItem.DataChunks.ToList();
-            //dataChunks.Sort(new DataChunkPartNameComparer());
-
-            //return new FileCallbackResult(new MediaTypeHeaderValue("application/octet-stream"), async (outputStream, _) =>
-            //{
-            //    foreach (var dataChunk in dataChunks)
-            //    {
-            //        using (Stream readStream = new MemoryStream(dataChunk.Data))
-            //        {
-            //            await readStream.CopyToAsync(outputStream);
-            //        }
-            //    }
-            //})
-            //{ FileDownloadName = fileItem.FileName };
-
-
-            //var bytes = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
-            //List<byte[]> byteArrays = new List<byte[]>
-            //{
-            //    new byte[]{ 1, 2, 3, 4, 5, 6, 7, 8 },
-            //    new byte[]{ 9, 10, 11, 12, 13, 14, 15, 16 },
-            //    new byte[]{ 17, 18, 19, 20, 21, 22, 23, 24 },
-            //    new byte[]{ 25, 26, 27, 28, 29, 30, 31, 32 }
-            //};
-
-            //return new FileCallbackResult(new MediaTypeHeaderValue("application/octet-stream"), async (outputStream, _) =>
-            //{
-            //    foreach (var ba in byteArrays)
-            //    {
-            //        using (Stream readStream = new MemoryStream(ba))
-            //        {
-            //            await readStream.CopyToAsync(outputStream);
-            //        }
-            //    }
-            //})
-            //{ FileDownloadName = "TestBytes.txt"};
-            #endregion
+                })
+            {
+                FileDownloadName = fileItem.FileName
+            };
         }
 
         // Finds the DataChunk to resume from.
@@ -162,8 +103,7 @@ namespace CloudMineServer.API_server.Controllers
             else
             {
                 int indexOfStartChunk = (int)(Math.Floor(
-                    ((float)startByteNr / (float)fileItem.FileSize)
-                    * (float)dataChunk.NumberOfChunksInSequence()));
+                    (float)startByteNr / (float)fileItem.FileSize * (float)dataChunk.NumberOfChunksInSequence()));
 
                 // dataChunk to resume from
                 dataChunk = await _context.GetDataChunkAtIndex(dataChunk, indexOfStartChunk);
